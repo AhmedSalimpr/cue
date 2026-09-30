@@ -13,12 +13,37 @@ function looksLikeHallucination(raw) {
   const trimmed = (raw || '').trim();
   if (!trimmed) return true;
   if (/^[\p{Emoji_Presentation}\p{Extended_Pictographic}\s]+$/u.test(trimmed)) return true;
+
   const t = trimmed.replace(/[.,!?…]+$/g, '').trim().toLowerCase();
+  const clean = t.replace(/[^a-z\s]/g, '').replace(/\s+/g, ' ').trim();
+  if (!clean) return true;
+
+  // Detect word repetition loops (e.g. "erem erem erem", "you you you", "híru híru")
+  const words = clean.split(/\s+/);
+  if (words.length > 3) {
+    const counts = {};
+    let maxFreq = 0;
+    for (const w of words) {
+      counts[w] = (counts[w] || 0) + 1;
+      if (counts[w] > maxFreq) maxFreq = counts[w];
+    }
+    if (maxFreq / words.length > 0.4) return true;
+  }
+
+  // Detect foreign language hallucinations (non-ASCII characters e.g. Sjöndag, Díu, Híru)
+  if (/[^\x00-\x7F]/.test(trimmed)) return true;
+
   const artifacts = new Set([
     'thank you', 'thank you very much', 'thank you for watching', 'thanks for watching',
-    'please subscribe', 'like and subscribe', 'bye-bye', 'bye bye', 'bye', 'you', 'okay'
+    'please subscribe', 'like and subscribe', 'bye-bye', 'bye bye', 'bye', 'you', 'okay',
+    'kiss kill girls', 'oh fuck', 'you you', 'im sorry'
   ]);
-  return artifacts.has(t);
+  if (artifacts.has(t) || artifacts.has(clean)) return true;
+  if (/^(you\s*)+$/.test(clean)) return true;
+  if (/^(the\s*)+$/.test(clean)) return true;
+  if (/^(thank you\s*)+$/.test(clean)) return true;
+
+  return false;
 }
 
 function buildVocabPrompt(settings) {

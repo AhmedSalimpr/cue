@@ -86,7 +86,10 @@ class LocalWhisperTranscriber {
     const job = this.queueTail.then(async () => {
       if (this.discardPendingJobs) return;
       const text = await this.session.transcribe(pcm);
-      if (text) this.onTranscript(channel, text);
+      
+      if (text && !this._isHallucination(text)) {
+        this.onTranscript(channel, text);
+      }
     });
 
     this.queueTail = job
@@ -100,6 +103,39 @@ class LocalWhisperTranscriber {
         }
       });
     return job;
+  }
+
+  _isHallucination(text) {
+    const clean = text.toLowerCase().replace(/[^a-z\s]/g, '').replace(/\s+/g, ' ').trim();
+    if (!clean) return true;
+
+    // Detect looping words (e.g. "you you you", "the the the")
+    const words = clean.split(/\s+/);
+    if (words.length > 4) {
+      const counts = {};
+      let maxFreq = 0;
+      for (const w of words) {
+        counts[w] = (counts[w] || 0) + 1;
+        if (counts[w] > maxFreq) maxFreq = counts[w];
+      }
+      // If a single word makes up more than 40% of the utterance, it's likely a hallucination loop
+      if (maxFreq / words.length > 0.4) return true;
+    }
+
+    // Filter common exact Whisper artifacts (often seen during silence)
+    const exactMatches = [
+      'thank you', 'bye bye', 'you you', 'im sorry', 'subscribe', 
+      'thanks for watching', 'kiss kill girls', 'oh fuck',
+      'i', 'you', 'the', 'and'
+    ];
+    if (exactMatches.includes(clean)) return true;
+
+    // Filter heavy repetition of common artifacts
+    if (/^(you\s*)+$/.test(clean)) return true;
+    if (/^(the\s*)+$/.test(clean)) return true;
+    if (/^(thank you\s*)+$/.test(clean)) return true;
+
+    return false;
   }
 
   async _drainQueue() {
