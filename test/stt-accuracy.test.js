@@ -9,8 +9,31 @@ test('looksLikeHallucination drops Whisper silence artifacts', () => {
   });
 });
 
+test('looksLikeHallucination drops foreign/gibberish noise', () => {
+  // Non-ASCII foreign characters (Icelandic/Welsh hallucinations)
+  ['Sjöndag', 'Díu', 'Híru', 'Enya, Hrabi, Bail'].forEach((s) => {
+    assert.equal(looksLikeHallucination(s), true, JSON.stringify(s));
+  });
+  // Gibberish short words (triple consonant start, rare letters)
+  ['Bshg', 'Qok', 'Zzm Xrt'].forEach((s) => {
+    assert.equal(looksLikeHallucination(s), true, JSON.stringify(s));
+  });
+  // Repetition-heavy multi-word outputs
+  ['Erem, Erem, Erem, Erem.', 'Meme, Meme.'].forEach((s) => {
+    assert.equal(looksLikeHallucination(s), true, JSON.stringify(s));
+  });
+});
+
 test('looksLikeHallucination keeps real speech', () => {
-  ['Tell me about your experience with Kubernetes.', 'You know, I led the migration.'].forEach((s) => {
+  [
+    'Tell me about your experience with Kubernetes.',
+    'You know, I led the migration.',
+    'The deployment pipeline runs on Jenkins.',
+    'Can you describe your role?',
+    'I have five years of experience in cloud infrastructure.',
+    'Hello, nice to meet you.',
+    'Docker and Terraform are key tools.'
+  ].forEach((s) => {
     assert.equal(looksLikeHallucination(s), false, JSON.stringify(s));
   });
 });

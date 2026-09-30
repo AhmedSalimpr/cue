@@ -9,6 +9,9 @@ const BASE_VOCAB = 'CI/CD, Docker, Kubernetes, Terraform, Jenkins, AWS, Azure, G
   'pipeline, container, orchestration, Ansible, Prometheus, Grafana, Helm, EKS, ECS, Lambda, ' +
   'S3, EC2, IAM, GitHub Actions, GitLab, Kafka, PostgreSQL, Redis, MongoDB, REST API, gRPC';
 
+// English-biasing prompt prepended to Groq/Whisper calls to anchor the model
+const ENGLISH_BIAS_PREFIX = 'This is an English business meeting conversation. ';
+
 function looksLikeHallucination(raw) {
   const trimmed = (raw || '').trim();
   if (!trimmed) return true;
@@ -18,20 +21,54 @@ function looksLikeHallucination(raw) {
   const clean = t.replace(/[^a-z\s]/g, '').replace(/\s+/g, ' ').trim();
   if (!clean) return true;
 
-  // Detect word repetition loops (e.g. "erem erem erem", "you you you", "híru híru")
+  // Detect word repetition loops (e.g. "erem erem erem", "you you you", "Meme, Meme.")
   const words = clean.split(/\s+/);
-  if (words.length > 3) {
-    const counts = {};
-    let maxFreq = 0;
-    for (const w of words) {
-      counts[w] = (counts[w] || 0) + 1;
-      if (counts[w] > maxFreq) maxFreq = counts[w];
+  if (words.length >= 2) {
+    if (words.length === 2 && words[0] === words[1]) return true;
+    if (words.length > 2) {
+      const counts = {};
+      let maxFreq = 0;
+      for (const w of words) {
+        counts[w] = (counts[w] || 0) + 1;
+        if (counts[w] > maxFreq) maxFreq = counts[w];
+      }
+      if (maxFreq / words.length > 0.4) return true;
     }
-    if (maxFreq / words.length > 0.4) return true;
   }
 
   // Detect foreign language hallucinations (non-ASCII characters e.g. Sjöndag, Díu, Híru)
   if (/[^\x00-\x7F]/.test(trimmed)) return true;
+
+  // Detect list of capitalized proper nouns / names hallucinated from noise (e.g. "Enya, Hrabi, Bail", "Ayde, Held, Alveig")
+  const rawWords = trimmed.split(/[\s,]+/);
+  if (rawWords.length >= 2 && rawWords.every(w => /^[A-Z][a-z]+$/.test(w)) && /,/.test(trimmed)) {
+    return true;
+  }
+
+  // Short transcript heuristic: ≤2 words that look like gibberish
+  // Real English words rarely have 3+ consecutive consonants at start or unusual bigrams
+  if (words.length <= 2) {
+    const suspicious = words.filter(w =>
+      /^[bcdfghjklmnpqrstvwxyz]{3,}/i.test(w) ||  // triple consonant start
+      w.length <= 1 ||                              // single letter
+      /(.)\1{2,}/.test(w) ||                        // triple repeated char
+      (/^[qxzj]/i.test(w) && w.length <= 3)         // rare-start short word
+    );
+    if (suspicious.length === words.length) return true;
+  }
+
+  // Detect gibberish via letter entropy — real English words have common bigrams
+  // If most words have unusual letter patterns, it's likely noise
+  if (words.length >= 2 && words.length <= 6) {
+    const uncommonWords = words.filter(w => {
+      if (w.length < 3) return false;
+      // Check for common English bigrams
+      const commonBigrams = /th|he|in|er|an|re|on|at|en|nd|ti|es|or|te|of|ed|is|it|al|ar|st|to|nt|ng|se|ha|as|ou|io|le|ve|co|me|de|hi|ri|ro|ic|ne|ea|ra|ce/;
+      const hasBigram = commonBigrams.test(w);
+      return !hasBigram;
+    });
+    if (uncommonWords.length / words.length > 0.6) return true;
+  }
 
   const artifacts = new Set([
     'thank you', 'thank you very much', 'thank you for watching', 'thanks for watching',
@@ -87,12 +124,13 @@ function createSTT(settings) {
   const keys = settings.apiKeys || {};
   const selectedProvider = settings.sttProvider || 'auto';
   const vocabPrompt = buildVocabPrompt(settings);
+  const groqPrompt = ENGLISH_BIAS_PREFIX + vocabPrompt;
   const chain = [];
   if ((selectedProvider === 'auto' || selectedProvider === 'openai') && keys.openai) {
     chain.push({ p: 'openai', fn: (wav) => transcribeOpenAI(keys.openai, wav, settings.sttModel, undefined, vocabPrompt) });
   }
   if ((selectedProvider === 'auto' || selectedProvider === 'groq') && keys.groq) {
-    chain.push({ p: 'groq', fn: (wav) => transcribeOpenAI(keys.groq, wav, 'whisper-large-v3-turbo', 'https://api.groq.com/openai/v1', vocabPrompt) });
+    chain.push({ p: 'groq', fn: (wav) => transcribeOpenAI(keys.groq, wav, 'whisper-large-v3-turbo', 'https://api.groq.com/openai/v1', groqPrompt) });
   }
   if ((selectedProvider === 'auto' || selectedProvider === 'gemini') && keys.gemini) {
     chain.push({ p: 'gemini', fn: (wav) => transcribeGemini(keys.gemini, wav) });

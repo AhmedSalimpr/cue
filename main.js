@@ -54,7 +54,9 @@ let sttDisabled = false; // set when the key can't reach any speech model (stops
 const buffers = { you: [], them: [] };
 const transcript = []; // { channel, text, ts } — capped at MAX_TRANSCRIPT_TURNS
 const MAX_TRANSCRIPT_TURNS = 200; // ~30–40 minutes of conversation at normal pace
-const FLUSH_MS = 900;
+const FLUSH_MS_DEFAULT = 900;
+const FLUSH_MS_GROQ = 2000; // longer chunks give Whisper more context, fewer hallucinations
+let activeFlushMs = FLUSH_MS_DEFAULT;
 const STREAM_INACTIVITY_MS = 25000; // abort a stalled LLM stream so state.busy can't wedge forever
 const MIN_BYTES = Math.floor(16000 * 2 * 0.5); // ~0.5s minimum window to avoid noise hallucinations
 const RMS_GATE = 220;
@@ -64,6 +66,8 @@ let localWhisperTranscriber = null;
 let activeWhisperModelId = null;
 let desiredCaptureState = false;
 let captureTransition = Promise.resolve(false);
+// Track whether VAD detected speech since last flush (per channel)
+const vadSpeechSinceFlush = { you: false, them: false };
 
 // -------- streaming STT state --------
 let streamingSTT = { you: null, them: null }; // streaming STT instances per channel
@@ -73,14 +77,14 @@ const vad = {
     onsetThreshold: 220,
     offsetThreshold: 130,
     silenceFrames: 18,       // ~540ms silence before end
-    onSpeechStart: () => send('vad:state', { channel: 'you', speaking: true }),
+    onSpeechStart: () => { vadSpeechSinceFlush.you = true; send('vad:state', { channel: 'you', speaking: true }); },
     onSpeechEnd: (dur) => send('vad:state', { channel: 'you', speaking: false, durationMs: dur })
   }),
   them: new AdaptiveVAD({
     onsetThreshold: 200,
     offsetThreshold: 120,
     silenceFrames: 20,       // ~600ms for remote audio (more forgiving)
-    onSpeechStart: () => send('vad:state', { channel: 'them', speaking: true }),
+    onSpeechStart: () => { vadSpeechSinceFlush.them = true; send('vad:state', { channel: 'them', speaking: true }); },
     onSpeechEnd: (dur) => send('vad:state', { channel: 'them', speaking: false, durationMs: dur })
   })
 };
@@ -279,6 +283,10 @@ async function flushChannel(channel) {
   if (!chunks.length) return;
   const pcm = Buffer.concat(chunks);
   buffers[channel] = [];
+  // VAD gate: skip transcription if no speech was detected since last flush
+  const speechDetected = vadSpeechSinceFlush[channel];
+  vadSpeechSinceFlush[channel] = false;
+  if (!speechDetected) return;
   if (pcm.length < MIN_BYTES) return;
   if (rms16(pcm) < RMS_GATE) return; // silence gate
 
@@ -333,7 +341,9 @@ function handleSttError(err, settings) {
 
 function startFlushLoop() {
   if (flushTimer) return;
-  flushTimer = setInterval(() => { flushChannel('you'); flushChannel('them'); }, FLUSH_MS);
+  const settings = store.getSettings();
+  activeFlushMs = (settings.sttProvider === 'groq') ? FLUSH_MS_GROQ : FLUSH_MS_DEFAULT;
+  flushTimer = setInterval(() => { flushChannel('you'); flushChannel('them'); }, activeFlushMs);
 }
 function stopFlushLoop() { if (flushTimer) { clearInterval(flushTimer); flushTimer = null; } }
 
